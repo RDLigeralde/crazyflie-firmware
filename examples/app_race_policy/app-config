@@ -1,0 +1,9 @@
+CONFIG_APP_ENABLE=y
+CONFIG_APP_PRIORITY=1
+CONFIG_APP_STACKSIZE=350
+# race_controller.c's controllerOutOfTree() bypasses controller_pid.c via
+# controlModeForce/normalizedForces (mixer.c + kf conversion) — see that
+# file's own docstring for why this is required, not optional, for any
+# sim-trained checkpoint. Action input is still a bench-testing param
+# stand-in (ctrlRace group), not yet driven by the app-channel/policy.
+CONFIG_CONTROLLER_OOT=y
