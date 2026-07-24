@@ -33,6 +33,7 @@
 #include "mixer.h"
 #include "obs_channel.h"
 #include "policy.h"
+#include "policy_mem.h"
 
 #include "param.h"
 #include "log.h"
@@ -47,8 +48,19 @@
 // attitude action_type checkpoint (see file docstring); an rpm-type
 // checkpoint's raw output has different semantics and would be
 // misinterpreted by mixAttitudeRpm below.
+//
+// obsChannelEnable is only the OPERATOR's intent to arm — the policy loop
+// below only actually runs when that intent is ALSO backed by
+// policyWeightsValid() (see policy.h/policy_mem.c): a ground-station weight
+// upload (policyWeightsWrite(), MEM_TYPE_APP) that's in progress or that
+// failed its CRC check can never get armed no matter what this param is
+// set to. armedLog/weightsValidLog mirror the live (gated) state, not just
+// the raw request, so a rejected arm attempt is visible over the ctrlRace
+// LOG_GROUP below rather than silently doing nothing.
 static uint8_t obsChannelEnable = 0;
 static uint32_t obsFramesReceived = 0;
+static uint8_t armedLog = 0;
+static uint8_t weightsValidLog = 0;
 
 // Per-vehicle dynamics constants — defaults are dmcdrones' MJXVectorAviary
 // nominals (kf=3.16e-10, hover derived from mass=0.027kg at g=9.81,
@@ -82,6 +94,7 @@ void controllerOutOfTreeInit(void)
   action1 = 0.0f;
   action2 = 0.0f;
   action3 = 0.0f;
+  policyMemInit();
 }
 
 bool controllerOutOfTreeTest(void)
@@ -103,7 +116,18 @@ void controllerOutOfTree(control_t *control, const setpoint_t *setpoint,
   (void)state;
   (void)stabilizerStep;
 
-  if (obsChannelEnable) {
+  // Mirror the operator's arm request into policy.c, gated on the currently
+  // loaded weights actually validating — see the field docstring above and
+  // policy.h's policySetArmed(). This must run every tick, before the
+  // obsChannelEnable check below: it's also what tells policyWeightsWrite()
+  // whether it's safe to accept an in-progress ground-station upload right
+  // now (never, while armed).
+  bool armed = (obsChannelEnable != 0) && policyWeightsValid();
+  policySetArmed(armed);
+  armedLog = armed ? 1 : 0;
+  weightsValidLog = policyWeightsValid() ? 1 : 0;
+
+  if (armed) {
     float obs[POLICY_OBS_DIM];
     if (obsChannelPoll(obs)) {
       float policyAction[POLICY_ACTION_DIM];
@@ -172,4 +196,6 @@ LOG_ADD(LOG_FLOAT, nf1, &normalizedForcesOut[1])
 LOG_ADD(LOG_FLOAT, nf2, &normalizedForcesOut[2])
 LOG_ADD(LOG_FLOAT, nf3, &normalizedForcesOut[3])
 LOG_ADD(LOG_UINT32, obsFrames, &obsFramesReceived)
+LOG_ADD(LOG_UINT8, armed, &armedLog)
+LOG_ADD(LOG_UINT8, weightsValid, &weightsValidLog)
 LOG_GROUP_STOP(ctrlRace)
