@@ -17,9 +17,9 @@
 #define POLICY_ACTION_DIM 4
 #define POLICY_NUM_LAYERS 3
 #define POLICY_TOTAL_FLOATS 19844
-#define POLICY_TOTAL_BYTES (POLICY_TOTAL_FLOATS * 4u)
+#define POLICY_TOTAL_BYTES (POLICY_TOTAL_FLOATS * 2u)  // fp16 (uint16_t bits) = 2 bytes/value
 #define POLICY_HEADER_BYTES 24u
-#define POLICY_WEIGHTS_MAGIC 0x314C4F50u
+#define POLICY_WEIGHTS_MAGIC 0x324C4F50u
 
 /**
  * Deterministic actor forward pass: obs[POLICY_OBS_DIM] -> actionOut[POLICY_ACTION_DIM].
