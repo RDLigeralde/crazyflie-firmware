@@ -63,7 +63,7 @@ Come back here for the firmware-side reference below: what the `ctrlRace` params
 Set with `set_ctrl_race_params.py --set NAME=VALUE`. All are runtime-writable — no reflash needed.
 
 - **`obsChanEnable`** (u8, default 0) — operator intent to arm the policy. Necessary, not sufficient.
-- **`obsStaleTicks`** (u16, default 50) — ms without a complete observation frame before falling back to PID. Stabilizer ticks are 1 kHz, so this is milliseconds directly. Too tight → mode flaps mid-lap; too loose → a dropped link coasts further before recovering.
+- **`obsStaleTicks`** (u16, default 50) — ms without a complete observation frame before falling back to PID. Stabilizer ticks are 1 kHz, so this is milliseconds directly. Too tight → mode flaps mid-lap; too loose → a dropped link coasts further before recovering. Size it against the actual observation rate: at the intended 48 Hz a frame arrives every 20.8 ms, so 50 ms tolerates about two consecutive misses. That 48 Hz target is itself a placeholder — see `crazyflie_ros/README.md` § **Observation Stream Rate**.
 - **`benchEnable`** (u8, default 0) — force bench mode: mixer driven by `action0..3` params, PID never runs. **Never set on a vehicle expected to fly under PID.**
 - **`hoverRpm` / `maxRpm` / `kf` / `differentialFrac`** — per-vehicle dynamics. Defaults are `mjx-drone-trainer` sim nominals (mass 0.027 kg, `max_rpm` 21714, `kf` 3.16e-10, `differential_frac` 0.02), *not* calibrated values.
 - **`action0..3`** — bench-test action stand-in, only read in `benchEnable=1`. Zeroed on init.
