@@ -50,64 +50,13 @@ Notes:
 - Config changes (`app-config`, Kconfig) need a `make clean` to take effect reliably.
 - The compiled-in checkpoint is active immediately after flashing — a fresh flash always has a working policy.
 
-## Flight Sequence
+## Flying It
 
-### 1. Build & flash
+Flashing is where this repo's involvement ends. Everything after it — weight upload, arming onboard mode, ROS bringup, and the takeoff/race/land sequence — belongs to the ground station:
 
-Per above. Everything below assumes `$URI` is exported.
+**→ [`crazyflie_ros/README.md`](../../../crazyflie_ros/README.md) § Onboard Policy Flight Sequence**
 
-### 2. Weight upload — *skip unless swapping checkpoints*
-
-Only needed to run a **different** checkpoint than the one compiled into the most recent flash
-
-```bash
-cd ../../../crazyflie_ros
-python3 ../mjx-drone-trainer/export_policy_c.py \
-  --run-dir ../mjx-drone-trainer/runs/race/sparse_attitude_seed0 \
-  --out-dir /tmp/policy_export --weights-out /tmp/policy_export/policy_weights.bin
-python3 bin/upload_policy_weights.py --uri $URI /tmp/policy_export/policy_weights.bin
-```
-
-- **A power cycle reverts to the compiled-in checkpoint.** Need to re-upload after every reboot.
-
-### 3. Enable onboard mode (while disarmed)
-
-```bash
-python3 bin/set_ctrl_race_params.py --uri $URI --enable-onboard --read
-```
-
-- Sets `ctrlRace.obsChanEnable=1`. This is the operator's *intent* to arm the policy — it does not by itself hand over control (see **Control Modes**).
-- `--read` lists the **param** group only. `weightsValid` and `mode` are **log** variables and will not appear there — inspect them in cfclient's log tab, or with a cflib log block.
-- If `weightsValid=0` on a fresh flash, the flashed binary itself is suspect (not a step-2 issue, if you skipped it) — recheck the build before flying.
-
-### 4. Bringup (3 terminals)
-
-All three run from `<workspace>/crazyflie_ros`.
-
-```bash
-ros2 launch jirl_bringup vicon.launch.py
-ros2 launch jirl_bringup crazyradio_driver.launch.py
-ros2 launch jirl_bringup controller.launch.py \
-  namespace:=crazy_jirl_b5 \
-  onboard_policy_enable:=true \
-  onboard_policy_checkpoint_path:=../mjx-drone-trainer/runs/race/sparse_attitude_seed0
-```
-
-- `onboard_policy_checkpoint_path` resolves against the **launch process's working directory**, not the package — the value above assumes you launched from `crazyflie_ros/`. Use an absolute path if launching from anywhere else.
-- `onboard_policy_checkpoint_path` is **ROS-side bookkeeping/logging only** — this launch does not push it to the vehicle.
-- Make sure it matches what is actually running onboard (the flashed checkpoint, or step 2's upload). Nothing cross-checks this automatically.
-
-### 5. Fly
-
-```bash
-ros2 service call /arm jirl_interfaces/srv/Arm "{crazyflie_name: 'crazy_jirl_b5', command: 0}"
-ros2 service call /crazy_jirl_b5/takeoff std_srvs/srv/Trigger
-ros2 service call /crazy_jirl_b5/race    std_srvs/srv/Trigger
-ros2 service call /crazy_jirl_b5/land    std_srvs/srv/Trigger
-```
-
-- `takeoff`/`land` fly under **PID** (`mode=0`). Only `race` starts the observation stream that promotes the vehicle to `mode=1`.
-- Expect `ctrlRace.mode` to read 0 → 1 on `race`, and 1 → 0 on `land`.
+Come back here for the firmware-side reference below: what the `ctrlRace` params and logs mean, and what to check when a flight goes wrong.
 
 ## Params (`ctrlRace`)
 
