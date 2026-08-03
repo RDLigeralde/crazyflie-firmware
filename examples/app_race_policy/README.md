@@ -61,7 +61,6 @@ Per above. Everything below assumes `$URI` is exported.
 Only needed to run a **different** checkpoint than the one compiled into the most recent flash
 
 ```bash
-# from examples/app_race_policy -> workspace root is ../../..
 cd ../../../crazyflie_ros
 python3 ../mjx-drone-trainer/export_policy_c.py \
   --run-dir ../mjx-drone-trainer/runs/race/sparse_attitude_seed0 \
@@ -69,9 +68,7 @@ python3 ../mjx-drone-trainer/export_policy_c.py \
 python3 bin/upload_policy_weights.py --uri $URI /tmp/policy_export/policy_weights.bin
 ```
 
-- Vehicle must be **disarmed** — do this before step 3, not after.
-- Uploads are refused outright while armed; a bad architecture or failed CRC is rejected whole, never partially applied.
-- Weights live in RAM: **a power cycle reverts to the compiled-in checkpoint.** Re-upload after every reboot.
+- **A power cycle reverts to the compiled-in checkpoint.** Need to re-upload after every reboot.
 
 ### 3. Enable onboard mode (while disarmed)
 
