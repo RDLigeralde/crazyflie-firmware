@@ -1,38 +1,50 @@
 # app_race_policy
 
-Onboard neural-network control for racing. The workstation streams observations over the app-channel; the Crazyflie runs the policy forward pass itself and drives per-motor RPM directly, bypassing the stock attitude-rate PID.
+Onboard neural-network control for racing. The workstation streams observations over the app-channel while the Crazyflie runs the policy forward pass itself and drives per-motor RPM directly, bypassing the stock attitude-rate PID.
 
-- **Policy** — actor-only MLP, fp16 weights, exported from an `mjc_dronetests` checkpoint by `export_policy_c.py` into `src/policy.c`/`policy.h`.
-- **Observations** — `crazyflie_ros`' controller node computes v3 observations from mocap and streams them via `Crazyflie::sendRaceObservation` (3 chunks/frame, 7 floats each).
-- **Weights** — compiled into flash, and swappable at runtime over CRTP `MEM_TYPE_APP` without reflashing (see `src/policy_mem.c`).
-- **Actuation** — `src/mixer.c` ports the sim's `mix_attitude_rpm` exactly, then `kf·rpm²` → `controlModeForce`. Open loop, no gyro feedback anywhere — deliberate, since that is what every checkpoint was trained against.
+- **Policy:** fp16 MLP exported from an [`mjx-drone-trainer`](https://github.com/Jirl-upenn/mjx-drone-trainer) checkpoint by `export_policy_c.py` into `src/policy.c`/`policy.h`. Firmware comes with pre-trained weights, but they can be swapped without re-flashing (see `src/policy_mem.c`).
+- **Observations:** — `crazyflie_ros`' controller node computes observations from external mocap and streams them via `Crazyflie::sendRaceObservation` (3 chunks/frame, 7 floats each).
+- **Actuation** — `src/mixer.c` emulates the policy output → per-motor RPMs from  [`mjx-drone-trainer`](https://github.com/Jirl-upenn/mjx-drone-trainer).
+
+## Expected Layout
+
+Three sibling repos under one workspace directory. **Every path in this README is relative to this layout** — clone them side by side and the commands below work verbatim.
+
+```
+<workspace>/
+├── crazyflie-firmware/                ← this repo
+│   └── examples/app_race_policy/      ← you are here
+├── crazyflie_ros/                     ← ROS 2 stack: mocap, radio driver, obs streaming
+│   ├── bin/                           ← upload_policy_weights.py, set_ctrl_race_params.py
+│   └── tools/crazyflie_cpp/           ← Crazyflie::sendRaceObservation
+└── mjx-drone-trainer/                 ← training; also export_policy_c.py
+    └── runs/<task>/<run-name>/        ← checkpoints (params.pkl + config.json)
+```
+
+- Relative hops worth memorizing: from this directory, the workspace root is `../../..`, so `crazyflie_ros` is `../../../crazyflie_ros` and the trainer is `../../../mjx-drone-trainer`.
+- `export_policy_c.py` imports only `numpy` and `ml_dtypes` — no jax, no MuJoCo, no `dmcdrones`. You can export a checkpoint on the flight laptop without the training environment installed.
 
 ## Control Modes
 
-`CONFIG_CONTROLLER_OOT=y` makes `controllerOutOfTree()` the **sole** controller for the entire flight — PID is never reached on its own. It therefore arbitrates per phase, reported live as `ctrlRace.mode`:
-
+Since take-off, hover, and landing have a large sim-to-real gap, we maintain the original PID controller for these actions and only switch to NN command after stable hover is achieved. We also use the PID to prevent crashes due to stale / lost observation packets.
 | `mode` | Name | When | Drives motors via |
 |---|---|---|---|
 | 0 | PID | takeoff, hover, land, pre-race idle, stale/lost observations | `controllerPid()` |
 | 1 | policy | observations arriving *and* `obsChanEnable=1` *and* weights valid | `policyForward()` → mixer |
 | 2 | bench | `benchEnable=1` (overrides everything) | `ctrlRace.action0..3` → mixer |
 
-- **Observation freshness is the phase gate**, not `obsChanEnable`. The ROS controller publishes `/race_obs` only in its `racing` FSM state; every other phase sends ordinary CTBR setpoints and no observations. `obsChanEnable` is set before takeoff and cannot distinguish phases on its own.
-- Same mechanism is the **link-loss failsafe** — the stream stops, `obsStaleTicks` elapses, control reverts to PID rather than holding the last policy action.
-- Mode is evaluated every tick; entry and exit are both automatic.
-
 ## Build & Flash
 
-Requires `arm-none-eabi-gcc` (or the Bitcraze toolbelt / docker image). Built out of this directory, not the repo root — see the [build docs](https://www.bitcraze.io/documentation/repository/crazyflie-firmware/master/building-and-flashing/build/).
+Follow the [build docs](https://www.bitcraze.io/documentation/repository/crazyflie-firmware/master/building-and-flashing/build/) out of this directory rather than the project root:
 
 ```bash
 export URI=radio://0/80/2M/E7E7E701B1     # your vehicle
 
-cd ~/visual_prelims/crazyflie-firmware/examples/app_race_policy
+cd <workspace>/crazyflie-firmware/examples/app_race_policy
 make -j$(nproc)
 make cload CLOAD_CMDS="-w $URI"
 ```
-
+Notes:
 - First build generates `build/.config` from `alldefconfig` merged with `app-config`; subsequent builds reuse it. `make clean` to reset.
 - `make cload` warm-reboots the vehicle into its bootloader, flashes, and reboots. No physical button press needed.
 - Config changes (`app-config`, Kconfig) need a `make clean` to take effect reliably.
@@ -46,12 +58,13 @@ Per above. Everything below assumes `$URI` is exported.
 
 ### 2. Weight upload — *skip unless swapping checkpoints*
 
-Only needed to run a **different** checkpoint than the one compiled into the flash you just did. A fresh flash's compiled-in checkpoint is already active. If skipping, go straight to step 3.
+Only needed to run a **different** checkpoint than the one compiled into the most recent flash
 
 ```bash
-cd ~/visual_prelims/crazyflie_ros
-python3 ../mjc_dronetests/export_policy_c.py \
-  --run-dir /path/to/runs/race/sparse_attitude_seed0 \
+# from examples/app_race_policy -> workspace root is ../../..
+cd ../../../crazyflie_ros
+python3 ../mjx-drone-trainer/export_policy_c.py \
+  --run-dir ../mjx-drone-trainer/runs/race/sparse_attitude_seed0 \
   --out-dir /tmp/policy_export --weights-out /tmp/policy_export/policy_weights.bin
 python3 bin/upload_policy_weights.py --uri $URI /tmp/policy_export/policy_weights.bin
 ```
@@ -72,15 +85,18 @@ python3 bin/set_ctrl_race_params.py --uri $URI --enable-onboard --read
 
 ### 4. Bringup (3 terminals)
 
+All three run from `<workspace>/crazyflie_ros`.
+
 ```bash
 ros2 launch jirl_bringup vicon.launch.py
 ros2 launch jirl_bringup crazyradio_driver.launch.py
 ros2 launch jirl_bringup controller.launch.py \
   namespace:=crazy_jirl_b5 \
   onboard_policy_enable:=true \
-  onboard_policy_checkpoint_path:=../sparse_attitude_seed0
+  onboard_policy_checkpoint_path:=../mjx-drone-trainer/runs/race/sparse_attitude_seed0
 ```
 
+- `onboard_policy_checkpoint_path` resolves against the **launch process's working directory**, not the package — the value above assumes you launched from `crazyflie_ros/`. Use an absolute path if launching from anywhere else.
 - `onboard_policy_checkpoint_path` is **ROS-side bookkeeping/logging only** — this launch does not push it to the vehicle.
 - Make sure it matches what is actually running onboard (the flashed checkpoint, or step 2's upload). Nothing cross-checks this automatically.
 
@@ -103,7 +119,7 @@ Set with `set_ctrl_race_params.py --set NAME=VALUE`. All are runtime-writable �
 - **`obsChanEnable`** (u8, default 0) — operator intent to arm the policy. Necessary, not sufficient.
 - **`obsStaleTicks`** (u16, default 50) — ms without a complete observation frame before falling back to PID. Stabilizer ticks are 1 kHz, so this is milliseconds directly. Too tight → mode flaps mid-lap; too loose → a dropped link coasts further before recovering.
 - **`benchEnable`** (u8, default 0) — force bench mode: mixer driven by `action0..3` params, PID never runs. **Never set on a vehicle expected to fly under PID.**
-- **`hoverRpm` / `maxRpm` / `kf` / `differentialFrac`** — per-vehicle dynamics. Defaults are `mjc_dronetests` sim nominals (mass 0.027 kg, `max_rpm` 21714, `kf` 3.16e-10, `differential_frac` 0.02), *not* calibrated values.
+- **`hoverRpm` / `maxRpm` / `kf` / `differentialFrac`** — per-vehicle dynamics. Defaults are `mjx-drone-trainer` sim nominals (mass 0.027 kg, `max_rpm` 21714, `kf` 3.16e-10, `differential_frac` 0.02), *not* calibrated values.
 - **`action0..3`** — bench-test action stand-in, only read in `benchEnable=1`. Zeroed on init.
 
 ## Logs (`ctrlRace`)
